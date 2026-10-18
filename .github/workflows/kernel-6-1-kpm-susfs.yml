@@ -28,11 +28,36 @@ on:
           - "123"
           - "345"
         default: "off"
-      sub_levels:
-        description: "指定 6.1 小版本（逗号分隔，如 141,157,X；留空=全部）"
-        required: false
-        type: string
-        default: ""
+      sub_level:
+        description: "选择要编译的 6.1 版本（括号内为安全补丁月份，全部=编译所有版本）"
+        required: true
+        type: choice
+        options:
+          - "全部"
+          - "6.1.25 (2023-10)"
+          - "6.1.43 (2023-11)"
+          - "6.1.57 (2024-01)"
+          - "6.1.68 (2024-03)"
+          - "6.1.75 (2024-05)"
+          - "6.1.78 (2024-06)"
+          - "6.1.84 (2024-07)"
+          - "6.1.90 (2024-08)"
+          - "6.1.93 (2024-09)"
+          - "6.1.99 (2024-10)"
+          - "6.1.112 (2024-11)"
+          - "6.1.115 (2024-12)"
+          - "6.1.118 (2025-01)"
+          - "6.1.124 (2025-02)"
+          - "6.1.128 (2025-03)"
+          - "6.1.129 (2025-04)"
+          - "6.1.134 (2025-05)"
+          - "6.1.138 (2025-06)"
+          - "6.1.141 (2025-07)"
+          - "6.1.145 (2025-09)"
+          - "6.1.157 (2025-12)"
+          - "6.1.162 (2026-03)"
+          - "6.1.X (lts)"
+        default: "全部"
       release_type:
         description: "编译完成后自动发布到 Release"
         required: true
@@ -113,12 +138,18 @@ jobs:
       - name: 生成构建矩阵
         id: filter
         env:
-          SUB_LEVELS: ${{ inputs.sub_levels }}
+          SELECTED: ${{ inputs.sub_level }}
         run: |
+          # 下拉值形如 "6.1.141 (2025-07)"，提取小版本号；"全部" 则编译所有版本
+          if [ "$SELECTED" = "全部" ]; then
+            SUB_LEVELS=""
+          else
+            SUB_LEVELS=$(echo "$SELECTED" | sed -E 's/^6\.1\.([^ ]+).*/\1/')
+          fi
+
           ALL=$(yq -o=json -I=0 '.jobs["build-kernels-a14-6-1"].strategy.matrix.include' .github/workflows/kernel-a14-6-1.yml)
           echo "可用版本: $(echo "$ALL" | jq -r '[.[].sub_level] | join(",")')"
 
-          # 支持逗号/空格分隔，留空或 all 表示全部
           WANTED=$(echo "$SUB_LEVELS" | tr ', ' '\n\n' | sed '/^$/d' | jq -R . | jq -s -c .)
           if [ "$WANTED" = "[]" ] || echo "$WANTED" | jq -e 'map(ascii_downcase) | index("all")' >/dev/null; then
             MATRIX="$ALL"
@@ -226,6 +257,7 @@ jobs:
 
           | 项目 | 值 |
           |------|-----|
+          | 内核版本 | ${{ inputs.sub_level }} |
           | KernelSU 变体 | ${{ inputs.kernelsu_variant }} |
           | KPM | 开启 |
           | SUSFS | 开启 |

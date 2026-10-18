@@ -167,6 +167,7 @@ jobs:
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
   get-ksu-manager:
+    needs: prepare-matrix
     uses: ./.github/workflows/get-manager.yml
     secrets: inherit
     with:

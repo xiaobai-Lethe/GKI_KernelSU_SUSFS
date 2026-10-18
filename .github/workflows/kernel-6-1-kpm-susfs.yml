@@ -28,6 +28,15 @@ on:
           - "123"
           - "345"
         default: "off"
+      release_type:
+        description: "编译完成后自动发布到 Release"
+        required: true
+        type: choice
+        options:
+          - Release
+          - Pre-Release
+          - 不发布
+        default: Release
       artifact_upload_mode:
         description: "构建产物上传模式"
         required: true
@@ -105,3 +114,75 @@ jobs:
       droidspaces: ${{ inputs.droidspaces }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
+
+  # 编译完成后自动创建 Release，上传所有成功构建的内核与管理器
+  release:
+    if: ${{ always() && !cancelled() && inputs.release_type != '不发布' }}
+    needs: build-6-1-kpm-susfs
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v8
+        with:
+          path: ./downloaded-artifacts
+
+      - name: 整理发布文件
+        run: |
+          mkdir -p release-files
+          cd downloaded-artifacts
+          for dir in */; do
+            dir="${dir%/}"
+            case "$dir" in
+              # 日志、冲突文件、补丁不发布
+              *-Build-Logs|*-Rejects|SUSFS-Patch*) continue ;;
+              # 「仅上传 AnyKernel3.zip」模式下产物是解压后的目录，重新打包成 zip
+              *_kernel-*-AnyKernel3)
+                (cd "$dir" && zip -r -9 -q "../../release-files/${dir}.zip" .) ;;
+              *)
+                find "$dir" -type f -exec cp {} ../release-files/ \; ;;
+            esac
+          done
+          cd ..
+          ls -la release-files
+          if ! ls release-files | grep -q -i "anykernel3\|\.img$"; then
+            echo "没有成功构建的内核，跳过发布" >&2
+            echo "HAS_KERNEL=false" >> $GITHUB_ENV
+          else
+            echo "HAS_KERNEL=true" >> $GITHUB_ENV
+          fi
+
+      - name: 创建 GitHub Release
+        if: env.HAS_KERNEL == 'true'
+        run: |
+          TAG="6.1-kpm-susfs-$(date -u +%Y%m%d)-r${{ github.run_number }}"
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.release_type }}" == "Pre-Release" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          cat > release_body.md << EOF
+          ## GKI 6.1 内核 (KPM + SUSFS)
+
+          | 项目 | 值 |
+          |------|-----|
+          | KernelSU 变体 | ${{ inputs.kernelsu_variant }} |
+          | KPM | 开启 |
+          | SUSFS | 开启 |
+          | ZRAM | ${{ inputs.use_zram }} |
+          | BBG | ${{ inputs.use_bbg }} |
+          | 构建结果 | ${{ needs.build-6-1-kpm-susfs.result }} |
+          | Actions 运行 | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |
+          EOF
+          sed -i 's/^          //' release_body.md
+
+          gh release create "$TAG" release-files/* \
+            --title "GKI 6.1 ${{ inputs.kernelsu_variant }} + KPM + SUSFS ($(date -u +%Y-%m-%d))" \
+            --notes-file release_body.md \
+            --target "$GITHUB_SHA" \
+            $PRERELEASE_FLAG
+
+          echo "## 发布已创建" >> $GITHUB_STEP_SUMMARY
+          echo "${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY

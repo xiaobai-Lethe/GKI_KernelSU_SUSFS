@@ -28,6 +28,11 @@ on:
           - "123"
           - "345"
         default: "off"
+      sub_levels:
+        description: "指定 6.1 小版本（逗号分隔，如 141,157,X；留空=全部）"
+        required: false
+        type: string
+        default: ""
       release_type:
         description: "编译完成后自动发布到 Release"
         required: true
@@ -95,12 +100,55 @@ on:
         default: false
 
 jobs:
-  # 复用 6.1 构建矩阵，固定开启 KPM 与 SUSFS
+  # 从 kernel-a14-6-1.yml 读取 6.1 版本列表，按输入筛选出要编译的版本
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.filter.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/workflows
+
+      - name: 生成构建矩阵
+        id: filter
+        env:
+          SUB_LEVELS: ${{ inputs.sub_levels }}
+        run: |
+          ALL=$(yq -o=json -I=0 '.jobs["build-kernels-a14-6-1"].strategy.matrix.include' .github/workflows/kernel-a14-6-1.yml)
+          echo "可用版本: $(echo "$ALL" | jq -r '[.[].sub_level] | join(",")')"
+
+          # 支持逗号/空格分隔，留空或 all 表示全部
+          WANTED=$(echo "$SUB_LEVELS" | tr ', ' '\n\n' | sed '/^$/d' | jq -R . | jq -s -c .)
+          if [ "$WANTED" = "[]" ] || echo "$WANTED" | jq -e 'map(ascii_downcase) | index("all")' >/dev/null; then
+            MATRIX="$ALL"
+          else
+            UNKNOWN=$(jq -n -r --argjson all "$ALL" --argjson w "$WANTED" '$w - [$all[].sub_level] | join(",")')
+            if [ -n "$UNKNOWN" ]; then
+              echo "::error::未知的 6.1 版本: $UNKNOWN（可用: $(echo "$ALL" | jq -r '[.[].sub_level] | join(",")')）"
+              exit 1
+            fi
+            MATRIX=$(jq -c -n --argjson all "$ALL" --argjson w "$WANTED" '[$all[] | select(.sub_level as $s | $w | index($s))]')
+          fi
+
+          echo "本次编译: $(echo "$MATRIX" | jq -r '[.[] | "6.1.\(.sub_level)"] | join(", ")')" | tee -a $GITHUB_STEP_SUMMARY
+          echo "matrix={\"include\":$MATRIX}" >> $GITHUB_OUTPUT
+
+  # 固定开启 KPM 与 SUSFS
   build-6-1-kpm-susfs:
-    uses: ./.github/workflows/kernel-a14-6-1.yml
+    name: "6.1.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}"
+    needs: prepare-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+    uses: ./.github/workflows/build.yml
     secrets: inherit
     with:
-      kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      android_version: "android14"
+      kernel_version: "6.1"
+      sub_level: ${{ matrix.sub_level }}
+      os_patch_level: ${{ matrix.os_patch_level }}
+      ksu_variant: ${{ inputs.kernelsu_variant }}
       version: ${{ inputs.version || '' }}
       build_time: ${{ inputs.build_time || '' }}
       use_zram: ${{ inputs.use_zram }}
@@ -110,15 +158,24 @@ jobs:
       use_nomount: ${{ inputs.use_nomount }}
       use_networking: ${{ inputs.use_networking }}
       cve_2026_43499_patch: ${{ inputs.cve_2026_43499_patch }}
+      export_susfs_patches: false
+      supp_op: false
+      enable_susfs: true
       ksu_mode: 关闭
       droidspaces: ${{ inputs.droidspaces }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
+  get-ksu-manager:
+    uses: ./.github/workflows/get-manager.yml
+    secrets: inherit
+    with:
+      kernelsu_variant: ${{ inputs.kernelsu_variant }}
+
   # 编译完成后自动创建 Release，上传所有成功构建的内核与管理器
   release:
     if: ${{ always() && !cancelled() && inputs.release_type != '不发布' }}
-    needs: build-6-1-kpm-susfs
+    needs: [build-6-1-kpm-susfs, get-ksu-manager]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

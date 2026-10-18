@@ -1,0 +1,107 @@
+name: 内核构建 - 仅 6.1 (KPM + SUSFS)
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ==================== 下拉选项 ====================
+      kernelsu_variant:
+        description: "KernelSU 变体（KPM 需 SukiSU/BakaSU，Official 不支持）"
+        required: true
+        type: choice
+        options:
+          - SukiSU
+          - SukiSU(40726)
+          - SukiSU(40548)
+          - BakaSU
+        default: BakaSU
+      droidspaces:
+        description: "Droidspaces 容器支持"
+        required: false
+        type: choice
+        options:
+          - "off"
+          - "678"
+          - "123"
+          - "345"
+        default: "off"
+      artifact_upload_mode:
+        description: "构建产物上传模式"
+        required: true
+        type: choice
+        options:
+          - "仅上传 AnyKernel3.zip"
+          - "上传全部"
+        default: "仅上传 AnyKernel3.zip"
+
+      # ==================== 文本输入 ====================
+      version:
+        description: "自定义版本名 (可选)"
+        required: false
+        type: string
+      build_time:
+        description: "自定义构建时间 (可选，N或留空=当前UTC)"
+        required: false
+        type: string
+        default: "Sun Dec 01 08:10:00 UTC 2024"
+
+      # ==================== 开关（默认关闭） ====================
+      use_zram:
+        description: "启用 ZRAM 增强算法"
+        required: true
+        type: boolean
+        default: false
+      use_bbg:
+        description: "启用 BBG 防格机"
+        required: true
+        type: boolean
+        default: false
+      use_rekernel:
+        description: "启用 Re-Kernel 驱动"
+        required: false
+        type: boolean
+        default: false
+      use_nomount:
+        description: "启用 NoMount 挂载元模块"
+        required: false
+        type: boolean
+        default: false
+      use_networking:
+        description: "启用网络增强（BBRv3 / IPSet / Qdisc / CIFS）"
+        required: false
+        type: boolean
+        default: false
+      cve_2026_43499_patch:
+        description: "应用 CVE-2026-43499 rtmutex 修复链"
+        required: false
+        type: boolean
+        default: false
+      droidspaces_ntsync:
+        description: "启用 Droidspaces 容器 NTSync 支持（需启用 Droidspaces）"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # 复用 6.1 构建矩阵，固定开启 KPM 与 SUSFS
+  build-6-1-kpm-susfs:
+    uses: ./.github/workflows/kernel-a14-6-1.yml
+    secrets: inherit
+    with:
+      kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      version: ${{ inputs.version || '' }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_kpm: "enabled (开启)"
+      use_rekernel: ${{ inputs.use_rekernel }}
+      use_nomount: ${{ inputs.use_nomount }}
+      use_networking: ${{ inputs.use_networking }}
+      cve_2026_43499_patch: ${{ inputs.cve_2026_43499_patch }}
+      ksu_mode: 关闭
+      droidspaces: ${{ inputs.droidspaces }}
+      droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
+      artifact_upload_mode: ${{ inputs.artifact_upload_mode }}

@@ -257,6 +257,78 @@ if [[ -f fs/statfs.c ]] && grep -qF 'susfs_sus_kstat_spoof_vfs_statfs(' fs/statf
   fi
 fi
 
+# SUSFS 在 2026-11-02 把 priority uid filter 收进 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER，
+# 但域切换辅助函数仍留在 ifdef 外面。选项关闭时它们没有调用点，clang -Werror 直接失败。
+# 选项打开时函数会被用到，__maybe_unused 不会额外告警。
+if [[ -f fs/susfs.c ]]; then
+  perl -i -pe 's/^static struct cred \*susfs_switch_to_ksu_domain\(void\)/static __maybe_unused struct cred *susfs_switch_to_ksu_domain(void)/ unless /__maybe_unused/' fs/susfs.c
+  perl -i -pe 's/^static void susfs_restore_creds\(struct cred \*orig_cred\)/static __maybe_unused void susfs_restore_creds(struct cred *orig_cred)/ unless /__maybe_unused/' fs/susfs.c
+fi
+
+# SukiSU builtin 已直接调用 susfs_parse_priority_app_strings / susfs_set_priority_uid_filter，
+# 却没有同步上游 10_enable_susfs_for_ksu.patch 里的 Kconfig（本仓库对 SukiSU 不打那份补丁）。
+# 声明和实现都包在该选项里，缺了符号就会变成隐式声明。
+ensure_priority_uid_filter_kconfig() {
+  python3 - "$1" << 'PY'
+import pathlib, re, sys
+
+kconfig = pathlib.Path(sys.argv[1])
+text = kconfig.read_text()
+if re.search(r"(?m)^[ \t]*config[ \t]+KSU_SUSFS_PRIORITY_UID_FILTER[ \t]*$", text):
+    sys.exit(0)
+
+anchor = re.search(r"(?m)^[ \t]*config[ \t]+KSU_SUSFS_SUS_MAP[ \t]*$", text)
+if not anchor:
+    anchor = re.search(r'(?m)^[ \t]*menu[ \t]+"KernelSU - SUSFS"', text)
+if not anchor:
+    print("Kconfig 没有 SUSFS 菜单，无法声明 KSU_SUSFS_PRIORITY_UID_FILTER", file=sys.stderr)
+    sys.exit(2)
+
+rest = text[anchor.end():]
+end = re.search(r"(?m)^endmenu[ \t]*$", rest)
+if not end:
+    print("未找到 SUSFS 菜单的 endmenu", file=sys.stderr)
+    sys.exit(2)
+
+indent = "\t"
+window = text[anchor.start():anchor.end() + 500]
+body = re.search(r"\n([ \t]+)bool ", window)
+if body:
+    indent = body.group(1)
+
+lines = [
+    "config KSU_SUSFS_PRIORITY_UID_FILTER",
+    f'{indent}bool "Enable to allow adding user-defined uids that will be hidden from getpriority/setpriority/ioprio_get/ioprio_set syscall"',
+    f"{indent}depends on KSU_SUSFS",
+    f"{indent}default y",
+    f"{indent}help",
+    f"{indent}  - Allow hiding user-defined uids from syscalls like getpriority/setpriority/ioprio_get/ioprio_set.",
+    f"{indent}  - Effective on all processes with uid >= 10000.",
+    "",
+]
+insert_at = anchor.end() + end.start()
+kconfig.write_text(text[:insert_at] + "\n".join(lines) + "\n" + text[insert_at:])
+PY
+}
+
+KSU_SRC="${KERNEL_ROOT:-}/KernelSU/kernel"
+if [[ -d "$KSU_SRC" ]] && grep -RqsE --include='*.c' 'susfs_(parse_priority_app_strings|set_priority_uid_filter)\(' "$KSU_SRC"; then
+  KSU_KCONFIG="$KSU_SRC/Kconfig"
+  if [[ ! -f "$KSU_KCONFIG" ]]; then
+    echo "::error::KernelSU 调用了 priority uid filter，但缺少 $KSU_KCONFIG"
+    exit 1
+  fi
+  if ! ensure_priority_uid_filter_kconfig "$KSU_KCONFIG"; then
+    echo "::error::无法为当前 KernelSU 补上 KSU_SUSFS_PRIORITY_UID_FILTER"
+    exit 1
+  fi
+  if ! grep -qE '^[[:space:]]*config[[:space:]]+KSU_SUSFS_PRIORITY_UID_FILTER([[:space:]]|$)' "$KSU_KCONFIG"; then
+    echo "::error::Kconfig 仍缺少 KSU_SUSFS_PRIORITY_UID_FILTER"
+    exit 1
+  fi
+  echo "已确保 Kconfig 声明 KSU_SUSFS_PRIORITY_UID_FILTER"
+fi
+
 # 在编译前报告 SUSFS 主补丁产生的冲突文件，上游自带的 .rej 不计入
 mapfile -t SUSFS_REJ_FILES < <(list_untracked_rej)
 SUSFS_REJ_COUNT=${#SUSFS_REJ_FILES[@]}

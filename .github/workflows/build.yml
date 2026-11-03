@@ -1433,6 +1433,21 @@ jobs:
           CONFIG_KSU_SUSFS_SUS_MAP=y
           EOF
 
+          # 2026-11-02 起 SUSFS 把 priority uid filter 收进独立选项。
+          # SukiSU builtin 会无条件调用它；符号由 apply.sh 补进缺少该选项的 Kconfig。
+          # 旧版固定提交没有这个符号时不要写入，否则 defconfig 检查会拒绝。
+          PRIORITY_UID_KCONFIG=""
+          for candidate in "$KERNEL_ROOT/KernelSU/kernel/Kconfig" "$KERNEL_ROOT/common/drivers/kernelsu/Kconfig"; do
+            if [ -f "$candidate" ] && grep -qE '^[[:space:]]*config[[:space:]]+KSU_SUSFS_PRIORITY_UID_FILTER([[:space:]]|$)' "$candidate"; then
+              PRIORITY_UID_KCONFIG="$candidate"
+              break
+            fi
+          done
+          if [ -n "$PRIORITY_UID_KCONFIG" ]; then
+            echo "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y" >> "$DEFCONFIG"
+            echo "已启用 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER（$PRIORITY_UID_KCONFIG）"
+          fi
+
           # 把本步实际追加的行导出为配置片段，随 SUSFS 集成补丁一起分发
           if [ "$SUSFS_PATCH_EXPORT" = "true" ] && [ -d "$GITHUB_WORKSPACE/susfs-patch" ]; then
             tail -n +$((LINES_BEFORE + 1)) "$DEFCONFIG" > "$GITHUB_WORKSPACE/susfs-patch/susfs.config"
